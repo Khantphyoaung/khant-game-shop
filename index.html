@@ -69,9 +69,10 @@ h2{font-size:22px;margin:28px 0 14px}.filters{display:flex;flex-wrap:wrap;gap:9p
  <div style="max-width:620px;margin:25px auto;background:#10233d;border:1px solid #326080;border-radius:18px;padding:20px">
   <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">KHANT Admin</h2><button id="adminClose">ပိတ်ရန် ✕</button></div>
   <div id="loginPane">
-   <p class="note">ပထမဆုံးအကြိမ်ဆို ကိုယ့် Admin Password အသစ်ကို ဒီ Browser အတွက် သတ်မှတ်ပါ။</p>
+   <p class="note">Admin အကောင့်ဖြင့် ဝင်ပါ။ Firebase မှာ ဖန်တီးထားသော Email နှင့် Password ကို သုံးပါ။</p>
+   <input class="search" id="adminEmail" type="email" placeholder="Admin Email">
    <input class="search" id="adminPass" type="password" placeholder="Admin Password">
-   <button class="primary" id="loginBtn">ဝင်မည် / Password သတ်မှတ်မည်</button>
+   <button class="primary" id="loginBtn">Admin ဝင်မည်</button>
    <p class="note" id="loginMsg"></p>
   </div>
   <div id="managePane" style="display:none">
@@ -98,13 +99,28 @@ function update(){const q=search.value.toLowerCase();document.querySelectorAll('
 buttons.forEach(b=>b.addEventListener('click',()=>{buttons.forEach(x=>x.classList.remove('active'));b.classList.add('active');filter=b.dataset.filter;update();}));
 search.addEventListener('input',update);
 </script>
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, getDocs } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
 
-const STORE_KEY='khant_shop_products_v1', PASS_KEY='khant_shop_admin_hash_v1';
-let products=JSON.parse(localStorage.getItem(STORE_KEY)||'[]'), editingId=null;
-const $=id=>document.getElementById(id);
+const firebaseConfig = {
+  apiKey: "AIzaSyCGeWLWUBQNfz5mJVK1K1mOlapqsAiYO5Duk",
+  authDomain: "khant-game-shop-3d8c6.firebaseapp.com",
+  projectId: "khant-game-shop-3d8c6",
+  storageBucket: "khant-game-shop-3d8c6.firebasestorage.app",
+  messagingSenderId: "793551550958",
+  appId: "1:793551550958:web:e4896d5b7749fb152236ff"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const productsRef = collection(db, 'products');
+const LEGACY_KEY = 'khant_shop_products_v1';
+let products = [], editingId = null, stopProducts = null;
+const $ = id => document.getElementById(id);
 function safe(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function persist(){localStorage.setItem(STORE_KEY,JSON.stringify(products));renderPublic();renderAdmin();}
+function showError(message){$('loginMsg').textContent=message;}
 function renderPublic(){
  const root=$('products');
  root.querySelectorAll('.dynamic-card').forEach(x=>x.remove());
@@ -124,45 +140,78 @@ function renderAdmin(){
   el.innerHTML=`<b>${safe(p.title)}</b> — ${safe(p.price)} Ks<br><small>${p.game==='ml'?'MLBB':'PUBG'}</small><br><button data-edit="${p.id}">ပြင်ရန်</button><button data-del="${p.id}">ဖျက်ရန်</button>`;
   root.appendChild(el);
  });
- root.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('ဒီ Account ကို ဖျက်မှာ သေချာပါသလား?')){products=products.filter(p=>p.id!==b.dataset.del);persist();}});
+ root.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+  if(!confirm('ဒီ Account ကို ဖျက်မှာ သေချာပါသလား?'))return;
+  try{await deleteDoc(doc(db,'products',b.dataset.del));}catch(e){alert('ဖျက်မရပါ။ Internet နဲ့ Admin login ကို စစ်ပါ။ '+e.message);}
+ });
  root.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{const p=products.find(x=>x.id===b.dataset.edit);editingId=p.id;$('game').value=p.game;$('title').value=p.title;$('price').value=p.price;$('details').value=p.details;$('saveProduct').textContent='ပြင်ဆင်ချက် သိမ်းမည်';});
+}
+function watchProducts(){
+ if(stopProducts)stopProducts();
+ stopProducts=onSnapshot(productsRef,snapshot=>{
+  products=snapshot.docs.map(d=>({id:d.id,...d.data()})).filter(p=>p.title && p.game);
+  renderPublic();renderAdmin();
+ },error=>{console.error(error);alert('Account များဖတ်မရပါ။ Firebase Firestore Rules ကို စစ်ပါ။');});
+}
+async function migrateOldProducts(){
+ let old=[];try{old=JSON.parse(localStorage.getItem(LEGACY_KEY)||'[]');}catch{}
+ if(!Array.isArray(old)||!old.length)return;
+ const snap=await getDocs(productsRef);
+ const hasRealProducts=snap.docs.some(d=>d.data().title && d.data().game);
+ if(hasRealProducts)return;
+ for(const p of old){
+  const data={game:p.game==='pubg'?'pubg':'ml',title:String(p.title||''),price:String(p.price||''),details:String(p.details||''),photos:Array.isArray(p.photos)?p.photos:(p.photo?[p.photo]:[])};
+  if(!data.title||!data.price)continue;
+  const size=JSON.stringify(data).length;
+  if(size>700000){alert('အရင်တင်ထားသော ပုံအရွယ်အစားကြီးလွန်းလို့ အားလုံး မကူးနိုင်ပါ။ ပုံနည်းနည်းနဲ့ ပြန်တင်ပေးပါ။');continue;}
+  await addDoc(productsRef,data);
+ }
 }
 function showAdmin(){ $('adminModal').style.display='block'; }
 $('adminOpen').onclick=showAdmin;$('adminClose').onclick=()=>$('adminModal').style.display='none';
 $('loginBtn').onclick=async()=>{
- const pass=$('adminPass').value;if(pass.length<10){$('loginMsg').textContent='Password အနည်းဆုံး ၁၀ လုံးထားပါ။';return;}
- const enc=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pass));
- const hash=[...new Uint8Array(enc)].map(x=>x.toString(16).padStart(2,'0')).join('');
- const saved=localStorage.getItem(PASS_KEY);
- if(!saved){localStorage.setItem(PASS_KEY,hash);$('loginMsg').textContent='ဒီ Browser အတွက် Password သတ်မှတ်ပြီးပါပြီ။';}
- else if(saved!==hash){$('loginMsg').textContent='Password မှားနေပါတယ်။';return;}
- $('loginPane').style.display='none';$('managePane').style.display='block';renderAdmin();
+ const email=$('adminEmail').value.trim(),pass=$('adminPass').value;
+ if(!email||!pass){showError('Email နဲ့ Password ဖြည့်ပါ။');return;}
+ const btn=$('loginBtn');btn.disabled=true;btn.textContent='ဝင်နေသည်...';showError('');
+ try{
+  await signInWithEmailAndPassword(auth,email,pass);
+  await migrateOldProducts();
+  $('loginPane').style.display='none';$('managePane').style.display='block';
+  watchProducts();
+ }catch(e){console.error(e);showError('ဝင်မရပါ။ Email / Password မှန်မမှန် စစ်ပါ။ ('+e.code+')');}
+ finally{btn.disabled=false;btn.textContent='Admin ဝင်မည်';}
 };
 function compressImage(file){
  return new Promise((resolve,reject)=>{
   const reader=new FileReader();reader.onerror=reject;
   reader.onload=()=>{const img=new Image();img.onerror=reject;img.onload=()=>{
-   const max=1200,scale=Math.min(1,max/Math.max(img.width,img.height));
+   const max=800,scale=Math.min(1,max/Math.max(img.width,img.height));
    const canvas=document.createElement('canvas');canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
-   canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',0.72));
+   canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL('image/jpeg',0.48));
   };img.src=reader.result;};reader.readAsDataURL(file);
  });
 }
 $('saveProduct').onclick=async()=>{
  const title=$('title').value.trim(),price=$('price').value.trim(),details=$('details').value.trim(),files=[...$('photo').files];
  if(!title||!price){alert('Account အမည်နဲ့ ဈေးနှုန်း ဖြည့်ပါ။');return;}
- if(files.length>15){alert('တစ်ကြိမ်လျှင် ပုံ ၁၅ ပုံအထိသာ ရွေးပါ။');return;}
- const btn=$('saveProduct');btn.disabled=true;btn.textContent='ပုံများ ပြင်ဆင်နေသည်...';
+ if(files.length>8){alert('တစ်ကြိမ်လျှင် ပုံ ၈ ပုံအထိသာ ရွေးပါ။');return;}
+ const btn=$('saveProduct');btn.disabled=true;btn.textContent='သိမ်းနေသည်...';
  try{
   const newPhotos=await Promise.all(files.map(compressImage));
-  if(editingId){const p=products.find(x=>x.id===editingId);const old=p.photos||(p.photo?[p.photo]:[]);Object.assign(p,{game:$('game').value,title,price,details,photos:[...old,...newPhotos]});}
-  else products.unshift({id:Date.now().toString(),game:$('game').value,title,price,details,photos:newPhotos});
-  editingId=null;$('title').value='';$('price').value='';$('details').value='';$('photo').value='';btn.textContent='Account တင်မည်';persist();
- }catch(e){alert('ပုံဖတ်မရပါ။ JPG သို့မဟုတ် PNG ပုံနဲ့ ပြန်စမ်းပါ။');}
+  const existing=editingId?(products.find(x=>x.id===editingId)?.photos||[]):[];
+  const photos=files.length?(editingId?[...existing,...newPhotos]:newPhotos):existing;
+  const data={game:$('game').value,title,price,details,photos};
+  if(JSON.stringify(data).length>700000)throw new Error('ပုံများ၏ စုစုပေါင်းအရွယ်အစား ကြီးလွန်းနေပါသည်။ ပုံအရေအတွက် လျှော့ပြီး ပြန်တင်ပါ။');
+  if(editingId)await updateDoc(doc(db,'products',editingId),data);else await addDoc(productsRef,data);
+  editingId=null;$('title').value='';$('price').value='';$('details').value='';$('photo').value='';btn.textContent='Account တင်မည်';
+ }catch(e){alert('သိမ်းမရပါ။ '+(e.message||'Internet / Firebase Rules ကို စစ်ပါ။'));}
  finally{btn.disabled=false;btn.textContent='Account တင်မည်';}
 };
-$('logoutBtn').onclick=()=>{$('managePane').style.display='none';$('loginPane').style.display='block';$('adminPass').value='';};
+$('logoutBtn').onclick=async()=>{
+ if(stopProducts){stopProducts();stopProducts=null;}
+ try{await signOut(auth);}catch(e){}
+ $('managePane').style.display='none';$('loginPane').style.display='block';$('adminPass').value='';
+};
 renderPublic();
-
 </script>
 </body></html>
